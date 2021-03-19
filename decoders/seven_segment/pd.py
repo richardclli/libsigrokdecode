@@ -22,8 +22,27 @@ import sigrokdecode as srd
 class ChannelError(Exception):
     pass
 
+# This table is sorted by ASCII code numbers, with the exception
+# of letters having their upper/lower case ignored.
+#
+# Traditional LED segment names and layout:
+#
+#      A
+#    F   B
+#      G
+#    E   C
+#      D
+#
+#    A  B  C  D  E  F  G
 digits = {
     (0, 0, 0, 0, 0, 0, 0): ' ',
+    (0, 1, 0, 0, 0, 1, 0): '"',
+    (1, 1, 0, 1, 1, 1, 1): "&",
+    (0, 0, 0, 0, 0, 1, 0): "'",
+    (0, 1, 0, 0, 0, 0, 0): "'",
+    (0, 0, 1, 1, 0, 0, 0): ',',
+    (0, 0, 0, 0, 0, 0, 1): '-',
+    (0, 0, 0, 0, 1, 0, 0): '.',
     (1, 1, 1, 1, 1, 1, 0): '0',
     (0, 1, 1, 0, 0, 0, 0): '1',
     (1, 1, 0, 1, 1, 0, 1): '2',
@@ -31,15 +50,53 @@ digits = {
     (0, 1, 1, 0, 0, 1, 1): '4',
     (1, 0, 1, 1, 0, 1, 1): '5',
     (1, 0, 1, 1, 1, 1, 1): '6',
+    (1, 1, 1, 0, 0, 1, 0): '7',
     (1, 1, 1, 0, 0, 0, 0): '7',
     (1, 1, 1, 1, 1, 1, 1): '8',
     (1, 1, 1, 1, 0, 1, 1): '9',
+    (1, 0, 0, 0, 0, 0, 1): '=',
+    (0, 0, 0, 1, 0, 0, 1): '=',
+    (1, 1, 0, 0, 1, 0, 1): '?',
     (1, 1, 1, 0, 1, 1, 1): 'A',
-    (0, 0, 1, 1, 1, 1, 1): 'B',
+    (1, 1, 1, 1, 1, 0, 1): 'a',
+    (0, 0, 1, 1, 1, 1, 1): 'b',
     (1, 0, 0, 1, 1, 1, 0): 'C',
-    (0, 1, 1, 1, 1, 0, 1): 'D',
+    (0, 0, 0, 1, 1, 0, 1): 'c',
+    (0, 1, 1, 1, 1, 0, 1): 'd',
     (1, 0, 0, 1, 1, 1, 1): 'E',
     (1, 0, 0, 0, 1, 1, 1): 'F',
+    (1, 0, 1, 1, 1, 1, 0): 'G',
+    (0, 1, 1, 0, 1, 1, 1): 'H',
+    (0, 0, 1, 0, 1, 1, 1): 'h',
+    (0, 0, 0, 0, 1, 1, 0): 'I',
+    (1, 0, 0, 0, 1, 0, 0): 'i',
+    (0, 0, 1, 0, 0, 0, 0): 'i',
+    (0, 1, 1, 1, 1, 0, 0): 'J',
+    (0, 1, 1, 1, 0, 0, 0): 'J',
+    (1, 0, 1, 1, 0, 0, 0): 'j',
+    (1, 0, 1, 0, 1, 1, 1): 'K',
+    (0, 0 ,0, 1, 1, 1, 0): 'L',
+    (1, 0, 1, 0, 1, 0, 0): 'M',
+    (1, 0, 1, 0, 1, 0, 1): 'M',
+    (1, 1, 1, 0, 1, 1, 0): 'N',
+    (0, 0, 1, 0, 1, 0, 1): 'n',
+    (0, 0, 1, 1, 1, 0, 1): 'o',
+    (1, 1, 0, 0, 1, 1, 1): 'p',
+    (1, 1, 1, 0, 0, 1, 1): 'q',
+    (1, 1, 0, 0, 1, 1, 0): 'R',
+    (0, 0, 0, 0, 1, 0, 1): 'r',
+    (0, 0, 0, 1, 1, 1, 1): 't',
+    (0, 0, 1, 1, 1, 0, 0): 'u',
+    (0, 1, 0, 1, 0, 1, 0): 'V',
+    (0, 1, 0, 0, 1, 1, 1): 'V',
+    (0, 1, 1, 1, 1, 1, 0): 'V',
+    (0, 1, 0, 0, 0, 1, 1): 'v',
+    (0, 1, 0, 1, 0, 1, 1): 'W',
+    (0, 0, 1, 0, 1, 0, 0): 'x',
+    (0, 1, 1, 1, 0, 1, 1): 'y',
+    (1, 1, 0, 1, 1, 0, 0): 'Z',
+    (1, 1, 0, 0, 0, 1, 0): '^',
+    (0, 0, 0, 1, 0, 0, 0): '_',
 }
 
 class Decoder(srd.Decoder):
@@ -67,6 +124,8 @@ class Decoder(srd.Decoder):
     options = (
         {'id': 'polarity', 'desc': 'Expected polarity',
             'default': 'common-cathode', 'values': ('common-cathode', 'common-anode')},
+        {'id': 'show_unknown', 'desc': 'Display Unknown characters as #',
+            'default': 'no', 'values': ('yes', 'no')},
     )
     annotations = (
         ('decoded-digit', 'Decoded digit'),
@@ -92,43 +151,36 @@ class Decoder(srd.Decoder):
 
     def decode(self):
         oldpins = self.wait()
-
-        # Check if at least the 7 signals are present.
-        if False in [p in (0, 1) for p in oldpins[:7]]:
-            raise ChannelError('7 or 8 pins have to be present.')
-
         lastpos = self.samplenum
 
+        # Check mandatory and optional decoder input signals.
+        if False in [p in (0, 1) for p in oldpins[:7]]:
+            raise ChannelError('Need at least segments A-G.')
         self.have_dp = self.has_channel(7)
+        seg_count = 8 if self.have_dp else 7
 
-        conditions = [{0: 'e'}, {1: 'e'}, {2: 'e'}, {3: 'e'}, {4: 'e'}, {5: 'e'}, {6: 'e'}]
-
-        if self.have_dp:
-            conditions.append({7: 'e'})
-
+        conditions = [{i: 'e'} for i in range(seg_count)]
         while True:
             # Wait for any change.
             pins = self.wait(conditions)
 
+            # Invert all data lines if a common anode display is used.
             if self.options['polarity'] == 'common-anode':
-                # Invert all data lines if a common anode display is used.
-                if self.have_dp:
-                    oldpins = tuple((1 - state for state in oldpins))
-                else:
-                    oldpins = tuple((1 - state for state in oldpins[:7]))
+                oldpins = tuple((1 - state for state in oldpins[:seg_count]))
 
             # Convert to character string.
             digit = self.pins_to_hex(oldpins[:7])
+            if digit is None and self.options['show_unknown'] == 'yes':
+                digit = '#'
 
+            # Emit annotation when conversion succeeded.
+            # Optionally present the decimal point when active.
             if digit is not None:
-                dp = oldpins[7]
-
-                # Check if decimal point is present and active.
-                if self.have_dp and dp == 1:
-                    digit += '.'
-
+                if self.have_dp:
+                    dp = oldpins[7]
+                    if dp == 1:
+                        digit += '.'
                 self.putb(lastpos, self.samplenum, [0, [digit]])
 
-            lastpos = self.samplenum
-
             oldpins = pins
+            lastpos = self.samplenum

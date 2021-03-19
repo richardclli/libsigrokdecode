@@ -37,6 +37,7 @@ SRD_PRIV const char *output_type_name(unsigned int idx)
 		"OUTPUT_ANN",
 		"OUTPUT_PYTHON",
 		"OUTPUT_BINARY",
+		"OUTPUT_LOGIC",
 		"OUTPUT_META",
 		"(invalid)"
 	};
@@ -114,6 +115,89 @@ static int convert_annotation(struct srd_decoder_inst *di, PyObject *obj,
 	pda->ann_text = ann_text;
 
 	PyGILState_Release(gstate);
+
+	return SRD_OK;
+
+err:
+	PyGILState_Release(gstate);
+
+	return SRD_ERR_PYTHON;
+}
+
+static void release_logic(struct srd_proto_data_logic *pdl)
+{
+	if (!pdl)
+		return;
+	g_free((void *)pdl->data);
+}
+
+static int convert_logic(struct srd_decoder_inst *di, PyObject *obj,
+		struct srd_proto_data *pdata)
+{
+	struct srd_proto_data_logic *pdl;
+	PyObject *py_tmp;
+	Py_ssize_t size;
+	int logic_group;
+	char *group_name, *buf;
+	PyGILState_STATE gstate;
+
+	gstate = PyGILState_Ensure();
+
+	/* Should be a list of [logic group, bytes]. */
+	if (!PyList_Check(obj)) {
+		srd_err("Protocol decoder %s submitted non-list for SRD_OUTPUT_LOGIC.",
+			di->decoder->name);
+		goto err;
+	}
+
+	/* Should have 2 elements. */
+	if (PyList_Size(obj) != 2) {
+		srd_err("Protocol decoder %s submitted SRD_OUTPUT_LOGIC list "
+				"with %zd elements instead of 2", di->decoder->name,
+				PyList_Size(obj));
+		goto err;
+	}
+
+	/* The first element should be an integer. */
+	py_tmp = PyList_GetItem(obj, 0);
+	if (!PyLong_Check(py_tmp)) {
+		srd_err("Protocol decoder %s submitted SRD_OUTPUT_LOGIC list, "
+			"but first element was not an integer.", di->decoder->name);
+		goto err;
+	}
+	logic_group = PyLong_AsLong(py_tmp);
+	if (!(group_name = g_slist_nth_data(di->decoder->logic_output_channels, logic_group))) {
+		srd_err("Protocol decoder %s submitted SRD_OUTPUT_LOGIC with "
+			"unregistered logic group %d.", di->decoder->name, logic_group);
+		goto err;
+	}
+
+	/* Second element should be bytes. */
+	py_tmp = PyList_GetItem(obj, 1);
+	if (!PyBytes_Check(py_tmp)) {
+		srd_err("Protocol decoder %s submitted SRD_OUTPUT_LOGIC list, "
+			"but second element was not bytes.", di->decoder->name);
+		goto err;
+	}
+
+	/* Consider an empty set of bytes a bug. */
+	if (PyBytes_Size(py_tmp) == 0) {
+		srd_err("Protocol decoder %s submitted SRD_OUTPUT_LOGIC "
+				"with empty data set.", di->decoder->name);
+		goto err;
+	}
+
+	if (PyBytes_AsStringAndSize(py_tmp, &buf, &size) == -1)
+		goto err;
+
+	PyGILState_Release(gstate);
+
+	pdl = pdata->data;
+	pdl->logic_group = logic_group;
+	/* pdl->repeat_count is set by the caller as it depends on the sample range */
+	if (!(pdl->data = g_try_malloc(size)))
+		return SRD_ERR_MALLOC;
+	memcpy((void *)pdl->data, (const void *)buf, size);
 
 	return SRD_OK;
 
@@ -321,6 +405,7 @@ static PyObject *Decoder_put(PyObject *self, PyObject *args)
 	struct srd_proto_data pdata;
 	struct srd_proto_data_annotation pda;
 	struct srd_proto_data_binary pdb;
+	struct srd_proto_data_logic pdl;
 	uint64_t start_sample, end_sample;
 	int output_id;
 	struct srd_pd_callback *cb;
@@ -419,6 +504,25 @@ static PyObject *Decoder_put(PyObject *self, PyObject *args)
 			cb->cb(&pdata, cb->cb_data);
 			Py_END_ALLOW_THREADS
 			release_binary(pdata.data);
+		}
+		break;
+	case SRD_OUTPUT_LOGIC:
+		if ((cb = srd_pd_output_callback_find(di->sess, pdo->output_type))) {
+			pdata.data = &pdl;
+			/* Convert from PyDict to srd_proto_data_logic. */
+			if (convert_logic(di, py_data, &pdata) != SRD_OK) {
+				/* An error was already logged. */
+				break;
+			}
+			if (end_sample <= start_sample) {
+				srd_err("Ignored SRD_OUTPUT_LOGIC with invalid sample range.");
+				break;
+			}
+			pdl.repeat_count = (end_sample - start_sample) - 1;
+			Py_BEGIN_ALLOW_THREADS
+			cb->cb(&pdata, cb->cb_data);
+			Py_END_ALLOW_THREADS
+			release_logic(pdata.data);
 		}
 		break;
 	case SRD_OUTPUT_META:
@@ -996,6 +1100,7 @@ static PyObject *Decoder_has_channel(PyObject *self, PyObject *args)
 	int idx, count;
 	struct srd_decoder_inst *di;
 	PyGILState_STATE gstate;
+	PyObject *bool_ret;
 
 	if (!self || !args)
 		return NULL;
@@ -1026,7 +1131,9 @@ static PyObject *Decoder_has_channel(PyObject *self, PyObject *args)
 
 	PyGILState_Release(gstate);
 
-	return (di->dec_channelmap[idx] == -1) ? Py_False : Py_True;
+	bool_ret = (di->dec_channelmap[idx] == -1) ? Py_False : Py_True;
+	Py_INCREF(bool_ret);
+	return bool_ret;
 
 err:
 	PyGILState_Release(gstate);
